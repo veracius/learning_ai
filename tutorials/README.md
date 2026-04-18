@@ -1,0 +1,10 @@
+# 2026-04-18
+Worked through Karpathy's Zero-to-Hero Lecture 1, and the "homework" he provided. It's amazing that a resource of this quality is free. 
+The math is pretty simple, especially since I've been reading Mitchell's "Machine Learning" text, but it was eye-opening to see just how much _more_ there is to the field (professionally). I'm looking forward to seeing where the difficulty comes from. I've developed this theory that there are two kinds of "difficulty": difficulty through scale (complexity), and difficulty through abstraction (conceptual difficulty). It's evident that scale is at play with MLPs; what are the conceptually difficult aspects of the field?
+
+I also though it would be a good exercise to try and re-create the micrograd example from the lecture in C. Python is a powerful tool, but I've always felt C requires a clear understanding of how data flows through a program. The conversion was more straightforward than I expected, though I did have to re-structure the code to use pointers. I also ran into an issue while implementing the indice operation; python lets you send whatever type you want, while the statically typed C required me to elevate the float variable to a full-on Value data object (this had the benefit of subsuming the exponent and power operations into one). 
+
+There was also some trickiness in implementing the backprop algorithm, since some operators are unary while others have two operands; the C function has to have the same parameter list, even if I can use a pointer to different functions. I worked around this by passing the node into the ***Backwards algorithm instead of the individual Value nodes. I wrote the basic implementation by hand, but used Claude to generate some of the helper/display functions as well as to straight vibe-code the expression parser (which is in a separate file) and the test.c script. Claude sent it with the Neuron implementation in the test example, but I do plan to implement it by hand separately at some point.  
+
+Can build with gcc -Wall -O2 -o test test.c -lm
+I still need to go through and check this myself, though.
