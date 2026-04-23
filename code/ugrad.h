@@ -11,7 +11,7 @@ typedef struct Value{
    double grad;
    unsigned char num_prev; //limit to 1 or 2 for simplicity
    struct Value *prev[2];
-   struct Value* (*op)(); //Potentially dangerous; consider using: (void *v1, void *v2); or Value * v1, Value *v2 (make all have same params)
+   void (*forward)(struct Value *curr);
    void (*backward)(struct Value *curr);
    char label[64];
 } Value;
@@ -22,21 +22,30 @@ typedef struct Value{
 Value *CreateValue(double data);
 
 Value *AddValues(Value *v1, Value *v2);
+void   AddForward(Value *curr);
 void   AddBackward(Value *curr);
 
 Value *MulValues(Value *v1, Value *v2);
+void   MulForward(Value *curr);
 void   MulBackward(Value *curr);
 
 Value *PowValues(Value *v1, Value *v2);
+void   PowForward(Value *curr);
 void   PowBackward(Value *curr);
 
 Value *TanhValue(Value *v);
+void   TanhForward(Value *curr);
 void   TanhBackward(Value *curr);
 
 Value *NegValue(Value *v1);
 Value *SubValues(Value *v1, Value *v2);
+Value *SumValues(Value **values, size_t n);
 
+void Forward(Value *root);
 void Backward(Value *root);
+void ZeroGrad(Value *root);
+void FreeValue(Value *v);
+void FreeGraph(Value *root);
 void PrintValue(Value *v);
 void PrintTree(Value *root);
 
@@ -49,7 +58,7 @@ Value *CreateValue(double data){
                      .grad = 0.0,
                      .num_prev = 0,
                      .prev = {[0]=NULL, [1]=NULL},
-                     .op = NULL,
+                     .forward = NULL,
                      .backward = NULL};
    return result;
 }
@@ -63,11 +72,15 @@ Value* AddValues(Value *v1, Value *v2){
                      .grad = 0.0,
                      .num_prev = 2,
                      .prev = {[0]=v1, [1]=v2},
-                     .op = AddValues,
+                     .forward = AddForward,
                      .backward = AddBackward};
    strncpy(result->label, "+", sizeof(result->label)-1);
 
    return result;
+}
+
+void AddForward(Value *curr){
+   curr->data = curr->prev[0]->data + curr->prev[1]->data;
 }
 
 void AddBackward(Value *curr){
@@ -86,11 +99,15 @@ Value* MulValues(Value *v1, Value *v2){
                      .grad = 0.0,
                      .num_prev = 2,
                      .prev = {[0]=v1, [1]=v2},
-                     .op = MulValues,
+                     .forward = MulForward,
                      .backward = MulBackward};
    strncpy(result->label, "*", sizeof(result->label)-1);
 
    return result;
+}
+
+void MulForward(Value *curr){
+   curr->data = curr->prev[0]->data * curr->prev[1]->data;
 }
 
 void MulBackward(Value *curr){
@@ -112,11 +129,15 @@ Value* PowValues(Value *v1, Value *v2){
                      .grad = 0.0,
                      .num_prev = 2,
                      .prev = {[0]=v1, [1]=v2},
-                     .op = PowValues,
+                     .forward = PowForward,
                      .backward = PowBackward};
    strncpy(result->label, "**", sizeof(result->label)-1);
 
    return result;
+}
+
+void PowForward(Value *curr){
+   curr->data = pow(curr->prev[0]->data, curr->prev[1]->data);
 }
 
 //Elevating power to Value data object requies computation of d/dv2(func)
@@ -137,11 +158,15 @@ Value* TanhValue(Value *v){
                      .grad = 0.0,
                      .num_prev = 1,
                      .prev = {[0]=v, [1]=NULL},
-                     .op = TanhValue,
+                     .forward = TanhForward,
                      .backward = TanhBackward};
    strncpy(result->label, "tanh", sizeof(result->label)-1);
 
    return result;
+}
+
+void TanhForward(Value *curr){
+   curr->data = tanh(curr->prev[0]->data);
 }
 
 void TanhBackward(Value *curr){
@@ -153,15 +178,21 @@ void TanhBackward(Value *curr){
 //Derivative Operations
 //=============================================================================
 Value *NegValue(Value *v1){
-   Value *v2 = malloc(sizeof(Value));
-   if(NULL == v1|| NULL == v2) return NULL;
-
-   v2 = CreateValue(-1.0);
-   return MulValues(v1, v2);
+   if(NULL == v1) return NULL;
+   return MulValues(v1, CreateValue(-1.0));
 }
 
 Value *SubValues(Value *v1, Value *v2){
    return AddValues(v1, NegValue(v2));
+}
+
+//not the most efficient but should be fine for neuron's sum volume
+Value *SumValues(Value **values, size_t n){
+   if(NULL == values || 0 == n) return NULL;
+   Value *acc = values[0];
+   for(size_t i = 1; i < n; i++)
+      acc = AddValues(acc, values[i]);
+   return acc;
 }
 
 //=============================================================================
@@ -195,6 +226,18 @@ static void build_topo(Value *v, ValueList *topo){
    list_push(topo, v);
 }
 
+void Forward(Value *root){
+   if(NULL == root) return;
+
+   ValueList topo = {0};
+   build_topo(root, &topo);
+
+   for(size_t i = 0; i < topo.len; i++)
+      if(topo.data[i]->forward) topo.data[i]->forward(topo.data[i]);
+
+   free(topo.data);
+}
+
 void Backward(Value *root){
    if(NULL == root) return;
 
@@ -204,6 +247,34 @@ void Backward(Value *root){
    root->grad = 1.0;
    for(size_t i = topo.len; i-- > 0; )
       if(topo.data[i]->backward) topo.data[i]->backward(topo.data[i]);
+
+   free(topo.data);
+}
+
+void ZeroGrad(Value *root){
+   if(NULL == root) return;
+
+   ValueList topo = {0};
+   build_topo(root, &topo);
+
+   for(size_t i = 0; i < topo.len; i++)
+      topo.data[i]->grad = 0.0;
+
+   free(topo.data);
+}
+
+void FreeValue(Value *v){
+   free(v);
+}
+
+void FreeGraph(Value *root){
+   if(NULL == root) return;
+
+   ValueList topo = {0};
+   build_topo(root, &topo);
+
+   for(size_t i = 0; i < topo.len; i++)
+      free(topo.data[i]);
 
    free(topo.data);
 }
