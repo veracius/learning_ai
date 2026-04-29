@@ -16,6 +16,12 @@ typedef struct Value{
    char label[64];
 } Value;
 
+typedef struct ValueList{
+   Value **data;
+   size_t len;
+   size_t cap;
+} ValueList;
+
 //=============================================================================
 //Function Prototypes
 //=============================================================================
@@ -41,9 +47,9 @@ Value *NegValue(Value *v1);
 Value *SubValues(Value *v1, Value *v2);
 Value *SumValues(Value **values, size_t n);
 
-void Forward(Value *root);
-void Backward(Value *root);
-void ZeroGrad(Value *root);
+void Forward(Value *root, ValueList *topo);   //pass topo=NULL to build/free internally; pass a pre-built topo to skip rebuild
+void Backward(Value *root, ValueList *topo);  //same convention as Forward
+void ZeroGrad(Value *root, ValueList *topo);  //same convention as Forward
 void FreeValue(Value *v);
 void FreeGraph(Value *root);
 void PrintValue(Value *v);
@@ -199,12 +205,6 @@ Value *SumValues(Value **values, size_t n){
 //Backprop & Helper
 //=============================================================================
 
-typedef struct {
-   Value **data;
-   size_t len;
-   size_t cap;
-} ValueList;
-
 static int list_contains(ValueList *l, Value *v){
    for(size_t i = 0; i < l->len; i++)
       if(l->data[i] == v) return 1;
@@ -226,41 +226,57 @@ static void build_topo(Value *v, ValueList *topo){
    list_push(topo, v);
 }
 
-void Forward(Value *root){
+//If topo is NULL, builds a topo from root, walks it, frees it.
+//If topo is non-NULL, walks it as-is and does not free it; caller owns the topo.
+void Forward(Value *root, ValueList *topo){
    if(NULL == root) return;
 
-   ValueList topo = {0};
-   build_topo(root, &topo);
+   ValueList local = {0};
+   int owns = (NULL == topo);
+   if(owns){
+      build_topo(root, &local);
+      topo = &local;
+   }
 
-   for(size_t i = 0; i < topo.len; i++)
-      if(topo.data[i]->forward) topo.data[i]->forward(topo.data[i]);
+   for(size_t i = 0; i < topo->len; i++)
+      if(topo->data[i]->forward) topo->data[i]->forward(topo->data[i]);
 
-   free(topo.data);
+   if(owns) free(local.data);
 }
 
-void Backward(Value *root){
+//Same NULL-vs-cached convention as Forward. root->grad is always set to 1.0; backward functions accumulate via += so callers that want
+//fresh gradients should call ZeroGrad first.
+void Backward(Value *root, ValueList *topo){
    if(NULL == root) return;
 
-   ValueList topo = {0};
-   build_topo(root, &topo);
+   ValueList local = {0};
+   int owns = (NULL == topo);
+   if(owns){
+      build_topo(root, &local);
+      topo = &local;
+   }
 
    root->grad = 1.0;
-   for(size_t i = topo.len; i-- > 0; )
-      if(topo.data[i]->backward) topo.data[i]->backward(topo.data[i]);
+   for(size_t i = topo->len; i-- > 0; )
+      if(topo->data[i]->backward) topo->data[i]->backward(topo->data[i]);
 
-   free(topo.data);
+   if(owns) free(local.data);
 }
 
-void ZeroGrad(Value *root){
+void ZeroGrad(Value *root, ValueList *topo){
    if(NULL == root) return;
 
-   ValueList topo = {0};
-   build_topo(root, &topo);
+   ValueList local = {0};
+   int owns = (NULL == topo);
+   if(owns){
+      build_topo(root, &local);
+      topo = &local;
+   }
 
-   for(size_t i = 0; i < topo.len; i++)
-      topo.data[i]->grad = 0.0;
+   for(size_t i = 0; i < topo->len; i++)
+      topo->data[i]->grad = 0.0;
 
-   free(topo.data);
+   if(owns) free(local.data);
 }
 
 void FreeValue(Value *v){

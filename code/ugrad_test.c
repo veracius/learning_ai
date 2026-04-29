@@ -60,7 +60,7 @@ static void test_quadratic(void){
 
    check("f(3)", y->data, 20.0);
 
-   Backward(y);
+   Backward(y, NULL);
 
    // dy/dx = 6x - 4 = 14 at x=3.  Succeeds only if both 'x' refs share one node.
    Value *x = find_by_label(y, "x");
@@ -85,7 +85,7 @@ static void test_manual_L(void){
 
    check("L.data", L->data, -4.0);
 
-   Backward(L);
+   Backward(L, NULL);
 
    // Hand-derived in the notebook:
    check("a.grad",  a->grad,  8.0);
@@ -112,7 +112,7 @@ static void test_one_step_step(void){
    Value *f = named(CreateValue(-2.0), "f");
    Value *L = MulValues(AddValues(MulValues(a, b), c), f);
 
-   Backward(L);
+   Backward(L, NULL);
 
    a->data += 0.01 * a->grad;
    b->data += 0.01 * b->grad;
@@ -146,7 +146,7 @@ static void test_neuron(void){
 
    check("o.data", o->data, 0.7071067811865);
 
-   Backward(o);
+   Backward(o, NULL);
 
    check("x1.grad", x1->grad, -1.5);
    check("w1.grad", w1->grad,  1.0);
@@ -169,7 +169,7 @@ static void test_parser_matches_manual(void){
 
    check("L.data", L->data, -4.0);
 
-   Backward(L);
+   Backward(L, NULL);
 
    check("a.grad", find_by_label(L, "a")->grad,  8.0);
    check("b.grad", find_by_label(L, "b")->grad, -4.0);
@@ -196,7 +196,7 @@ static void test_shared_variable(void){
 
    check("y.data", y->data, 6.0);
 
-   Backward(y);
+   Backward(y, NULL);
    check("dy/da",  find_by_label(y, "a")->grad, 2.0);
 }
 

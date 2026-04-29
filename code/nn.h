@@ -25,9 +25,18 @@ typedef struct Layer{
 typedef struct MLP{
    unsigned int num_layers;
    Layer **layers;
+   unsigned int num_out;
    Value **out;
 }MLP;
 
+typedef struct Trainer{
+   MLP *model;
+   unsigned int num_out;
+   Value *loss_out;       //single combined loss root, e.g. sum_k (pred_k - target_k)^2 for MSE
+   Value **targets;       //per-output target Values, length num_out; caller updates targets[k]->data per sample
+   ValueList *topo;       //cached topo from loss_out; valid only while inputs/topology are not re-pointered
+   double learning_rate;  //SGD step size used by MLPStep; CreateTrainer initialises to 0.05; caller may override
+}Trainer;
 
 //=============================================================================
 //Neuron Functions
@@ -152,6 +161,10 @@ void FreeLayer(Layer *l){
    return;
 }
 
+//=============================================================================
+//MLP & Trainer Functions
+//=============================================================================
+
 //The outputs of all the neurons in one layer form the features for each neuron in the next layer,
 //except in the case of a single neuron (which the last layer should be), which outputs a final value
 MLP* CreateMLP(unsigned int n_features, unsigned int n_neurons_per_layer[], unsigned int n_layers){
@@ -172,12 +185,52 @@ MLP* CreateMLP(unsigned int n_features, unsigned int n_neurons_per_layer[], unsi
    }
 
    //Connect to final layer to MLP output array
+   perceptron->num_out      = perceptron->layers[n_layers-1]->num_neurons;
    perceptron->out          = perceptron->layers[n_layers-1]->out;
 
    return perceptron;
 }
 
-//Wires user-provided input Values into layer 0's neurons (features[1..]); count must equal the n_features passed to CreateMLP
+//Convenience: write per-sample input values into the shared layer-0 input Values (features[1..num_features-1]).
+//count must equal the n_features passed to CreateMLP. All layer-0 neurons share the same input Value pointers via ConnectMLPInputs, so writing through neurons[0] updates them for all neurons.
+void SetMLPInputs(MLP *mlp, double *xs, unsigned int count){
+   if(NULL == mlp || NULL == xs || 0 == mlp->num_layers) return;
+   Layer *l0 = mlp->layers[0];
+   if(NULL == l0 || 0 == l0->num_neurons) return;
+   Neuron *n0 = l0->neurons[0];
+   if(count != n0->num_features - 1) return;
+   for(unsigned int i = 0; i < count; i++) n0->features[i+1]->data = xs[i];
+}
+
+//Returns a malloc'd array of every learnable Value in the MLP (every weight, with bias packed in as weights[0] of each neuron).
+//Caller frees the returned array; the underlying Values remain owned by the MLP. *out_count receives the total parameter count.
+Value **MLPParameters(MLP *mlp, unsigned int *out_count){
+   if(NULL == mlp){ if(out_count) *out_count = 0; return NULL; }
+
+   unsigned int total = 0;
+   for(unsigned int li = 0; li < mlp->num_layers; li++){
+      Layer *l = mlp->layers[li];
+      for(unsigned int ni = 0; ni < l->num_neurons; ni++)
+         total += l->neurons[ni]->num_features;
+   }
+
+   Value **params = malloc(total * sizeof(Value *));
+   unsigned int idx = 0;
+   for(unsigned int li = 0; li < mlp->num_layers; li++){
+      Layer *l = mlp->layers[li];
+      for(unsigned int ni = 0; ni < l->num_neurons; ni++){
+         Neuron *n = l->neurons[ni];
+         for(unsigned int wi = 0; wi < n->num_features; wi++)
+            params[idx++] = n->weights[wi];
+      }
+   }
+
+   if(out_count) *out_count = total;
+   return params;
+}
+
+//Wires user-provided input Values into layer 0's neurons (features[1..]); count must equal the n_features passed to CreateMLP.
+//Call this BEFORE CreateTrainer if a Trainer with cached topo will be used; afterwards, update inputs[k]->data only — do not rewire.
 void ConnectMLPInputs(MLP *mlp, Value **inputs, unsigned int count){
    if(NULL == mlp || NULL == inputs || 0 == mlp->num_layers) return;
 
@@ -197,6 +250,153 @@ void FreeMLP(MLP *mlp){
    free(mlp->layers);
    //mlp->out aliases layers[n_layers-1]->out which FreeLayer already freed; do NOT free it again
    free(mlp);
+
+   return;
+}
+
+//Combined squared-error loss: loss_out = sum_k (model->out[k] - targets[k])^2, a single scalar Value*.
+//Targets are created with .data = 0 and meant to be overwritten per sample by the training loop.
+//Note: SubValues internally creates orphan -1.0 leaves and PowValues uses orphan 2.0 leaves; both end up in trainer->topo and must be cleaned up by FreeTrainer (set-difference vs MLP's reachable Values).
+void MSELoss(Trainer *t){
+   if(NULL == t || NULL == t->model || NULL == t->model->out) return;
+
+   Value *acc = NULL;
+   for(unsigned int k = 0; k < t->num_out; k++){
+      t->targets[k]   = CreateValue(0.0);
+      Value *diff     = SubValues(t->model->out[k], t->targets[k]);
+      Value *exponent = CreateValue(2.0);
+      Value *sq       = PowValues(diff, exponent);
+
+      acc = (NULL == acc) ? sq : AddValues(acc, sq);
+   }
+   t->loss_out = acc;
+
+   return;
+}
+
+//Builds a Trainer over an already-wired MLP. The MLP must have its inputs hooked up via ConnectMLPInputs already,
+//since this function caches a topological sort and any later re-pointering would invalidate the cache.
+//loss_func is invoked once with the partially-initialised Trainer and is responsible for filling targets[k] for each output and setting loss_out to the single combined loss root.
+Trainer *CreateTrainer(MLP *model, void (*loss_func)(Trainer *t)){
+   if(NULL == model || NULL == loss_func || 0 == model->num_out) return NULL;
+
+   Trainer *trainer       = malloc(sizeof(Trainer));
+   trainer->model         = model;
+   trainer->num_out       = model->num_out;
+   trainer->loss_out      = NULL;
+   trainer->targets       = malloc(model->num_out * sizeof(Value *));
+   trainer->topo          = malloc(sizeof(ValueList));
+   *trainer->topo         = (ValueList){0};
+   trainer->learning_rate = 0.05;
+
+   //Caller-supplied loss builder fills trainer->targets[k] and sets trainer->loss_out (single combined root)
+   loss_func(trainer);
+
+   //Cache topo from the single loss root. ugrad's stock Forward/Backward will rebuild their own topo each call;
+   //this cache is here for FreeTrainer (set-difference vs MLP topo) and any future custom walkers that want to skip the rebuild.
+   build_topo(trainer->loss_out, trainer->topo);
+
+   return trainer;
+}
+
+//Convenience: write per-sample target values into trainer->targets[k]->data
+void SetTrainerTargets(Trainer *t, double *ys, unsigned int count){
+   if(NULL == t || NULL == ys || count != t->num_out) return;
+   for(unsigned int k = 0; k < count; k++) t->targets[k]->data = ys[k];
+}
+
+//Vanilla SGD step: w->data -= learning_rate * w->grad for every weight in the MLP. Walks neurons directly to avoid an extra malloc per step.
+void MLPStep(Trainer *t){
+   if(NULL == t || NULL == t->model) return;
+   double lr = t->learning_rate;
+   MLP *mlp  = t->model;
+   for(unsigned int li = 0; li < mlp->num_layers; li++){
+      Layer *l = mlp->layers[li];
+      for(unsigned int ni = 0; ni < l->num_neurons; ni++){
+         Neuron *n = l->neurons[ni];
+         for(unsigned int wi = 0; wi < n->num_features; wi++)
+            n->weights[wi]->data -= lr * n->weights[wi]->grad;
+      }
+   }
+}
+
+//Frees the loss-side Value graph plus the Trainer's own bookkeeping. Does NOT free the underlying MLP — call FreeMLP separately afterward.
+//Must be called BEFORE FreeMLP, since identifying loss-only Values requires walking model->out subgraphs (which FreeMLP would invalidate).
+//Loss-only Values = trainer->topo minus everything reachable from model->out: target leaves, exponent 2.0 leaves, -1.0 leaves from NegValue, Sub-Adds, Neg-Muls, Pow heads, and the sum-chain Adds across outputs.
+void FreeTrainer(Trainer *t){
+   if(NULL == t) return;
+
+   //Build the MLP-reachable set. Includes user-supplied input Values borrowed by layer-0 neurons; those are not trainer-owned and FreeMLP also leaves them alone, so excluding them from the free set is correct (caller frees their own inputs).
+   ValueList mlp_topo = {0};
+   if(NULL != t->model && NULL != t->model->out)
+      for(unsigned int k = 0; k < t->model->num_out; k++)
+         build_topo(t->model->out[k], &mlp_topo);
+
+   //Free anything in trainer->topo that isn't MLP-reachable
+   if(NULL != t->topo)
+      for(size_t i = 0; i < t->topo->len; i++)
+         if(!list_contains(&mlp_topo, t->topo->data[i]))
+            FreeValue(t->topo->data[i]);
+
+   free(mlp_topo.data);
+
+   free(t->targets);
+   if(NULL != t->topo){
+      free(t->topo->data);
+      free(t->topo);
+   }
+   free(t);
+
+   return;
+}
+
+//Build the whole training stack in the correct order: CreateMLP -> allocate input Values -> ConnectMLPInputs -> CreateTrainer.
+//Returns the Trainer; access the rest via t->model and t->model->layers[0]->neurons[0]->features[1..n_features] (those are the input Values).
+//Caller writes per-sample inputs via features[i+1]->data and per-sample targets via t->targets[k]->data.
+Trainer *CreateTrainerSystem(unsigned int n_features,
+                             unsigned int n_neurons_per_layer[],
+                             unsigned int n_layers,
+                             void (*loss_func)(Trainer *t)){
+   if(NULL == n_neurons_per_layer || 0 == n_layers || 0 == n_features || NULL == loss_func) return NULL;
+
+   //1. Build the MLP
+   MLP *model = CreateMLP(n_features, n_neurons_per_layer, n_layers);
+   if(NULL == model) return NULL;
+
+   //2. Allocate input Values; ConnectMLPInputs copies these pointers into every layer-0 neuron's features[1..], so the array itself is just a temporary buffer.
+   Value **inputs = malloc(n_features * sizeof(Value *));
+   for(unsigned int i = 0; i < n_features; i++) inputs[i] = CreateValue(0.0);
+
+   //3. Wire the inputs BEFORE building the Trainer so the cached topo traces through them.
+   ConnectMLPInputs(model, inputs, n_features);
+   free(inputs); //Values now owned via layer-0 features (owns_features=0); the temp pointer array isn't needed
+
+   //4. Build the Trainer; loss_func fills targets[k] and loss_out, then CreateTrainer caches the topo.
+   return CreateTrainer(model, loss_func);
+}
+
+//Tear down the whole stack in the correct order: snapshot input pointers from layer 0, FreeTrainer, FreeMLP, then free inputs.
+//Snapshot must happen before FreeMLP because FreeMLP destroys layer 0; FreeTrainer must run before FreeMLP because its set-difference walks model->out.
+void FreeTrainerSystem(Trainer *t){
+   if(NULL == t) return;
+
+   MLP *model = t->model;
+
+   //Recover the input Values from layer 0 (all layer-0 neurons share the same input pointers in features[1..num_features-1])
+   unsigned int n_inputs    = 0;
+   Value **saved_inputs     = NULL;
+   if(NULL != model && model->num_layers > 0 && NULL != model->layers[0] && model->layers[0]->num_neurons > 0){
+      Neuron *n0   = model->layers[0]->neurons[0];
+      n_inputs     = n0->num_features - 1;
+      saved_inputs = malloc(n_inputs * sizeof(Value *));
+      for(unsigned int i = 0; i < n_inputs; i++) saved_inputs[i] = n0->features[i+1];
+   }
+
+   FreeTrainer(t);                     //must run before FreeMLP (set-difference walks model->out)
+   if(NULL != model) FreeMLP(model);   //skips layer-0 features[1..] because owns_features=0 — inputs survive
+
+   for(unsigned int i = 0; i < n_inputs; i++) FreeValue(saved_inputs[i]);
+   free(saved_inputs);
 
    return;
 }
