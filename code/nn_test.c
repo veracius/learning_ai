@@ -19,6 +19,11 @@ int main(void){
    unsigned int layer_sizes[3] = {4, 4, 1};
    Trainer *t = CreateTrainerSystem(3, layer_sizes, 3, MSELoss);
    if(NULL == t){ fprintf(stderr, "CreateTrainerSystem failed\n"); return 1; }
+   if(!LoadMLPWeights(t->model, "init_weights.txt")){
+      fprintf(stderr, "LoadMLPWeights failed (expected init_weights.txt next to the binary)\n");
+      FreeTrainerSystem(t);
+      return 1;
+   }
    t->learning_rate = 0.05;
 
    for(int epoch = 0; epoch < 20; epoch++){

@@ -202,6 +202,29 @@ void SetMLPInputs(MLP *mlp, double *xs, unsigned int count){
    for(unsigned int i = 0; i < count; i++) n0->features[i+1]->data = xs[i];
 }
 
+//Loads weights from a plain-text file (one float per line) in layer-major, neuron-major, weight-index order. Returns 1 on success, 0 on any failure (file open, short read, malformed value).
+//Order written/read: for each layer, for each neuron, weights[0] (bias) first, then weights[1..num_features-1]. This matches the canonical iteration in CreateNeuron and lets nn_test.c and nn_test.py share an init_weights.txt for cross-implementation reproducibility.
+int LoadMLPWeights(MLP *mlp, const char *filename){
+   if(NULL == mlp || NULL == filename) return 0;
+   FILE *f = fopen(filename, "r");
+   if(NULL == f) return 0;
+
+   for(unsigned int li = 0; li < mlp->num_layers; li++){
+      Layer *l = mlp->layers[li];
+      for(unsigned int ni = 0; ni < l->num_neurons; ni++){
+         Neuron *n = l->neurons[ni];
+         for(unsigned int wi = 0; wi < n->num_features; wi++){
+            double v;
+            if(fscanf(f, "%lf", &v) != 1){ fclose(f); return 0; }
+            n->weights[wi]->data = v;
+         }
+      }
+   }
+
+   fclose(f);
+   return 1;
+}
+
 //Returns a malloc'd array of every learnable Value in the MLP (every weight, with bias packed in as weights[0] of each neuron).
 //Caller frees the returned array; the underlying Values remain owned by the MLP. *out_count receives the total parameter count.
 Value **MLPParameters(MLP *mlp, unsigned int *out_count){
