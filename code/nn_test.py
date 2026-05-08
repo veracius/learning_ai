@@ -1,5 +1,6 @@
 import math
 import random
+import time
 
 
 # =============================================================================
@@ -162,6 +163,8 @@ def main():
     load_weights(n, "init_weights.txt")  # shared init with nn_test.c for cross-implementation match
     lr = 0.05
 
+    t_start = time.perf_counter()
+
     for epoch in range(20):
         total_loss = 0.0
         for x, y in zip(xs, ys):
@@ -182,11 +185,15 @@ def main():
 
         print(f"epoch {epoch:2d}  loss={total_loss:g}")
 
+    train_ms = (time.perf_counter() - t_start) * 1000.0
+
     print("\nFinal predictions:")
     for x, y in zip(xs, ys):
         pred = n(x)
         print(f"  x=({x[0]: .1f},{x[1]: .1f},{x[2]: .1f})  "
               f"pred={pred.data: .4f}  target={y: .1f}")
+
+    print(f"\ntraining time: {train_ms:.3f} ms")
 
 
 if __name__ == "__main__":

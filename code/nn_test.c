@@ -3,6 +3,7 @@
 //Compile: gcc nn_test.c -lm -o nn_test
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "nn.h"
 
 int main(void){
@@ -26,6 +27,9 @@ int main(void){
    }
    t->learning_rate = 0.05;
 
+   struct timespec t_start, t_end;
+   clock_gettime(CLOCK_MONOTONIC, &t_start);
+
    for(int epoch = 0; epoch < 20; epoch++){
       double total_loss = 0.0;
       for(int s = 0; s < 4; s++){
@@ -43,6 +47,10 @@ int main(void){
       printf("epoch %2d  loss=%g\n", epoch, total_loss);
    }
 
+   clock_gettime(CLOCK_MONOTONIC, &t_end);
+   double train_ms = (t_end.tv_sec - t_start.tv_sec) * 1000.0
+                   + (t_end.tv_nsec - t_start.tv_nsec) / 1e6;
+
    printf("\nFinal predictions:\n");
    for(int s = 0; s < 4; s++){
       SetMLPInputs(t->model, xs[s], 3);
@@ -51,6 +59,8 @@ int main(void){
              xs[s][0], xs[s][1], xs[s][2],
              t->model->out[0]->data, ys[s]);
    }
+
+   printf("\ntraining time: %.3f ms\n", train_ms);
 
    FreeTrainerSystem(t);
    return 0;
