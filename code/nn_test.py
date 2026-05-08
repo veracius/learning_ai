@@ -1,16 +1,3 @@
-"""Python equivalent of nn_test.c, using Karpathy's micrograd implementation
-(extracted from tutorials/2025-04-18_karpathy1/karpathy_1.ipynb).
-
-Trains MLP(3, [4, 4, 1]) on his 4-sample dataset for 20 epochs with online SGD,
-matching the C version's loop structure: per-sample zero/forward/backward/step.
-
-Note: Karpathy's MLP keeps the bias as a separate `self.b` field; nn.h packs it
-into `weights[0]` with a constant 1.0 feature. The math is equivalent. The
-random initialisation uses different PRNGs (Python's Mersenne Twister vs C's
-rand()), so loss curves and final predictions will not match bit-for-bit
-across implementations — but should converge to similar quality on this dataset.
-"""
-
 import math
 import random
 
